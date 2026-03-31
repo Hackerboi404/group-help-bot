@@ -13,7 +13,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Bot Token
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "8674805097:AAH6Wgg5akr7TC7fLSeZFiMCtfTe5t7Kcgs"
 
 # Database setup
 def init_db():
