@@ -7,7 +7,7 @@ from collections import defaultdict
 import re
 
 # Config
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "8674805097:AAH6Wgg5akr7TC7fLSeZFiMCtfTe5t7Kcgs"
 logging.basicConfig(level=logging.INFO)
 
 # Storage (No Database)
