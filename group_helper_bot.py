@@ -1,376 +1,431 @@
 import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
-from datetime import datetime, timedelta
+from collections import defaultdict
 import re
-import random
-from collections import defaultdict, deque
 
-# Logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Config
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+logging.basicConfig(level=logging.INFO)
 
-# Bot Token
-BOT_TOKEN = "8674805097:AAH6Wgg5akr7TC7fLSeZFiMCtfTe5t7Kcgs"
+# Storage (No Database)
+group_settings = defaultdict(dict)
+user_data = defaultdict(dict)
 
-# In-memory storage (restart pe reset ho jayega)
-group_settings = defaultdict(lambda: {
-    'welcome': True,
-    'goodbye': True,
-    'antispam': True,
-    'antiflood': True,
-    'blockbot': True,
-    'max_msg_len': 1000,
-    'media_delete': True
-})
-
-user_messages = defaultdict(lambda: defaultdict(deque))  # Antiflood tracking
-user_warns = defaultdict(lambda: defaultdict(int))      # Warnings
-muted_users = defaultdict(lambda: {})                  # Mutes
-moderators = defaultdict(set)                          # Moderator list
-
-# Helper functions
-async def is_admin_or_mod(update: Update, context: ContextTypes.DEFAULT_TYPE, command_level='basic') -> bool:
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    
+# Helper Functions
+async def is_admin(chat_id, user_id, context):
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
-        if member.status in ['creator', 'administrator']:
-            return True
+        return member.status in ['administrator', 'creator']
     except:
-        pass
-    
-    # Check moderator
-    if command_level == 'basic' and user_id in moderators[chat_id]:
-        return True
-    
-    return False
+        return False
 
-def get_user_mention(user):
-    return f"[{user.first_name or 'User'}](tg://user?id={user.id})"
+def get_group_name(chat):
+    return chat.title or chat.first_name or "Group"
 
-# === WELCOME SCREEN ===
+# === /START COMMAND ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("📋 Commands", callback_data='help_main')],
-        [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
-        [InlineKeyboardButton("📊 Stats", callback_data='stats')]
+        [InlineKeyboardButton("➕ Add Me To Group", url="https://t.me/YOUR_BOT_USERNAME?startgroup=true")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="settings_start")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    welcome_text = """
+    text = """
 🤖 **Welcome to Group Helper Bot!**
 
-*No Database - Super Fast! ⚡*
+/help - Commands dekho
 
 **Features:**
-✅ Anti-Spam & Anti-Flood
-✅ Welcome/Goodbye Messages  
-✅ Warns System (3 = Auto Ban)
-✅ Media Delete Control
-✅ Moderator System
-✅ Beautiful Buttons
-
-**Buttons se explore karo! 👇**
+✅ Anti-Spam/Flood
+✅ Welcome Messages
+✅ Media Control
+✅ Much More...
     """
-    
-    if update.message:
-        await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    else:
-        await update.callback_query.edit_message_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup, disable_web_page_preview=True)
 
-# === MAIN HELP BUTTONS (11 Buttons) ===
-async def help_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+# === /HELP COMMAND ===
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    is_group = update.effective_chat.type in ['group', 'supergroup']
     
     keyboard = [
-        [InlineKeyboardButton("👋 Welcome/Goodbye", callback_data='feature_welcome')],
-        [InlineKeyboardButton("🛡️ Anti Spam/Flood", callback_data='feature_antispam')],
-        [InlineKeyboardButton("🚫 Block Bot", callback_data='feature_blockbot')],
-        [InlineKeyboardButton("📢 SOS Admin", callback_data='feature_sos')],
-        [InlineKeyboardButton("🗑️ Delete Messages", callback_data='feature_deletemsg')],
-        [InlineKeyboardButton("⚠️ Warns System", callback_data='feature_warns')],
-        [InlineKeyboardButton("📱 Media Delete", callback_data='feature_mediadlt')],
-        [InlineKeyboardButton("📝 Log Channel", callback_data='feature_log')],
-        [InlineKeyboardButton("📏 Msg Length", callback_data='feature_msglen')],
-        [InlineKeyboardButton("⌨️ Commands Type", callback_data='feature_commands')],
-        [InlineKeyboardButton("🔙 Back", callback_data='start')]
+        [InlineKeyboardButton("🔹 Basic Commands", callback_data="help_basic")],
+        [InlineKeyboardButton("🔸 Advance", callback_data="help_advance")],
+        [InlineKeyboardButton("🔺 Expert", callback_data="help_expert")]
     ]
+    
+    if is_group:
+        keyboard.append([InlineKeyboardButton("💬 Go To Chat", callback_data="go_to_chat")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text("📋 **All Features & Commands:**", parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    text = "**Welcome to Help Menu**"
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
-# === FEATURE DETAILS ===
-feature_details = {
-    'feature_welcome': """
-**👋 Welcome/Goodbye Messages**
-
-*Commands:*
-`/welcome on/off` - Welcome toggle
-`/goodbye on/off` - Goodbye toggle
-
-*Auto Features:* ✅
-- New join pe welcome
-- Leave pe goodbye
-    """,
-
-    'feature_antispam': """
-**🛡️ Anti Spam/Flood**
-
-*Auto Features:* ✅
-- Same message repeat
-- Flood messages delete  
-- Fast typing stop
-
-*Commands:*
-`/antispam on/off`
-`/antiflood on/off`
-    """,
-
-    'feature_blockbot': """
-**🚫 Block Bots**
-
-*Auto Features:* ✅
-- New bots auto kick
-- Bot spam delete
-
-*Commands:*
-`/blockbot on/off`
-    """,
-
-    'feature_sos': """
-**📢 SOS Admin**
-
-*Commands:*
-`/sos` - Admin ko alert
-`/admins` - Admin list
-    """,
-
-    'feature_deletemsg': """
-**🗑️ Delete Messages**
-
-*Commands:*
-`/del 10` - Last 10 delete
-`/purge` - All delete (Admin)
-`/delme` - Apna message delete
-    """,
-
-    'feature_warns': """
-**⚠️ Warns System**
-
-*Commands:*
-`/warn @user` - Warning (3 = Ban)
-`/warns @user` - Check warns
-`/resetwarns @user` - Clear warns
-
-*Auto:* 3 warns = 🚫 Ban
-    """,
-
-    'feature_mediadlt': """
-**📱 Media Delete**
-
-*Commands:*
-`/mediadlt on/off`
-`/setmedia photo|video|gif`
-
-*Auto:* Forwarded media delete
-    """,
-
-    'feature_log': """
-**📝 Log Channel** *(Coming Soon)*
-    """,
-
-    'feature_msglen': """
-**📏 Message Length**
-
-*Commands:*
-`/setlen 500` - Max 500 chars
-`/len off` - Disable
-
-*Auto:* Long msg delete
-    """,
-
-    'feature_commands': """
-**⌨️ Commands - /extra**
-
-*3 Levels:*
-🔹 **Basic** - ban/mute/warn
-🔸 **Medium** - promote/lock/kick
-🔺 **Advance** - mod/filter/purge
-    """
-}
-
-# === /EXTRA COMMAND ===
-async def extra_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🔹 BASIC", callback_data='extra_basic')],
-        [InlineKeyboardButton("🔸 MEDIUM", callback_data='extra_medium')],
-        [InlineKeyboardButton("🔺 ADVANCE", callback_data='extra_advance')],
-        [InlineKeyboardButton("🏠 Home", callback_data='start')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "📋 **Commands by Level:**\n*Choose your commands:*",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=reply_markup
-    )
-
-extra_commands = {
-    'extra_basic': """
-**🔹 BASIC COMMANDS** *(Mods + Admins)*
-
-- `/ban @user` - Permanent ban
-- `/unban @user` - Unban user  
-- `/mute @user 30` - 30 min mute
-- `/unmute @user` - Unmute
-- `/warn @user` - Warning do
-- `/warns @user` - Warnings dekho
-- `/kick @user` - Kick only
-    """,
-
-    'extra_medium': """
-**🔸 MEDIUM COMMANDS** *(Admins Only)*
-
-- `/promote @user` - Admin banao
-- `/demote @user` - Admin hatao
-- `/lock photo|video|sticker` - Lock
-- `/unlock photo|video|sticker` - Unlock
-- `/admins` - Admin list
-- `/pin` - Message pin karo
-    """,
-
-    'extra_advance': """
-**🔺 ADVANCE COMMANDS** *(Owner Only)*
-
-- `/mod add @user` - Moderator banao
-- `/mod del @user` - Mod hatao
-- `/filter add keyword reply` - Auto reply
-- `/filter del keyword` - Filter remove
-- `/purge` - All messages delete
-- `/setwelcome text` - Custom welcome
-    """
-}
-
-# === MODERATOR SYSTEM ===
-async def mod_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin_or_mod(update, context, 'advance'):
-        return await update.message.reply_text("❌ **Owner only!**")
-    
-    chat_id = update.effective_chat.id
-    
-    if context.args and context.args[0] == 'add':
-        if len(context.args) < 2:
-            return await update.message.reply_text("❌ **/mod add @username**")
-        
-        mod_user = context.args[1].replace('@', '')
-        moderators[chat_id].add(int(mod_user))
-        await update.message.reply_text(f"✅ **{mod_user} Moderator ban gaya!**\nBan/Unban use kar sakta hai.")
-    
-    elif context.args and context.args[0] == 'del':
-        if len(context.args) < 2:
-            return await update.message.reply_text("❌ **/mod del @username**")
-        
-        mod_user = context.args[1].replace('@', '')
-        moderators[chat_id].discard(int(mod_user))
-        await update.message.reply_text(f"✅ **{mod_user} se moderator hataya!**")
-
-# === BASIC COMMANDS ===
-async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin_or_mod(update, context, 'basic'):
-        return await update.message.reply_text("❌ **Mod/Admin only!**")
-    
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ **User ko reply karo!**")
-    
-    user = update.message.reply_to_message.from_user
-    chat_id = update.effective_chat.id
-    
-    try:
-        await context.bot.ban_chat_member(chat_id, user.id)
-        await update.message.reply_text(f"🚫 **{get_user_mention(user)} banned!**", parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        await update.message.reply_text(f"❌ **Ban failed:** {str(e)}")
-
-async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin_or_mod(update, context, 'basic'):
-        return await update.message.reply_text("❌ **Mod/Admin only!**")
-    
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ **User ko reply karo!**")
-    
-    user = update.message.reply_to_message.from_user
-    chat_id = update.effective_chat.id
-    
-    user_warns[chat_id][user.id] += 1
-    warns_count = user_warns[chat_id][user.id]
-    
-    msg = f"⚠️ **Warn #{warns_count}/3** {get_user_mention(user)}"
-    
-    if warns_count >= 3:
-        try:
-            await context.bot.ban_chat_member(chat_id, user.id)
-            msg += "\n🚫 **3 warns complete - BANNED!**"
-            del user_warns[chat_id][user.id]  # Reset warns
-        except:
-            pass
-    
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
-
-async def warns(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ **User ko reply karo!**")
-    
-    user = update.message.reply_to_message.from_user
-    chat_id = update.effective_chat.id
-    count = user_warns[chat_id].get(user.id, 0)
-    
-    await update.message.reply_text(f"📊 **Warnings:** {count}/3")
-
-# === CALLBACK HANDLER ===
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# === HELP CALLBACKS ===
+async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
     data = query.data
     
-    if data == 'help_main':
-        await help_main_callback(update, context)
-    elif data == 'start':
-        await start(update, context)
-    elif data.startswith('feature_'):
-        text = feature_details.get(data, "❌ Feature nahi mila!")
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='help_main')]]
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, 
-                                    reply_markup=InlineKeyboardMarkup(keyboard))
-    elif data.startswith('extra_'):
-        text = extra_commands.get(data, "❌ Command nahi mila!")
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='help_main')]]
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, 
-                                    reply_markup=InlineKeyboardMarkup(keyboard))
+    if data == "help_basic":
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="help_main")]]
+        text = """
+**🔹 BASIC COMMANDS:**
+/reload - Bot restart
+/ban - User ban
+/mute - User mute
+/kick - User kick
+/unban - Unban
+/info - User info
+/staff - Staff list
+        """
+    
+    elif data == "help_advance":
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="help_main")]]
+        text = """
+**🔸 ADVANCE COMMANDS:**
+/warn - Warning do
+/unwarn - Warn hatao
+/warns - Warns check
+/delwarns - All warns clear
+/del - Selected msg delete
+        """
+    
+    elif data == "help_expert":
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="help_main")]]
+        text = """
+**🔺 EXPERT COMMANDS:**
+/pin [message] - Pin message
+/pin - Reply se pin
+/delpin - Pinned delete
+/editpin - Pinned edit
+        """
+    
+    elif data == "help_main":
+        await help_command(update, context)
+        return
+    
+    elif data == "go_to_chat":
+        keyboard = [[InlineKeyboardButton("💬 Open Help", url=f"https://t.me/{context.bot.username}?start=help")]]
+        await query.edit_message_text("💬 **Bot ke DM me jao Help ke liye**", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+# === SETTINGS SYSTEM ===
+async def settings_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query if update.callback_query else None
+    chat_id = update.effective_chat.id
+    
+    if not await is_admin(chat_id, update.effective_user.id, context):
+        text = "❌ **Group me /settings use karo (Admin hoke)!**"
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="settings_start")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if query:
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("📋 Open Here", callback_data="settings_open_here")],
+        [InlineKeyboardButton("💬 Open in Pvt", callback_data="settings_pvt")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    text = "**Use in Group:** `/settings`"
+    if query:
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+async def settings_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    
+    if not await is_admin(chat_id, update.effective_user.id, context):
+        await update.message.reply_text("❌ **Admin only!**")
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("📋 Open Here", callback_data=f"settings_open_{chat_id}")],
+        [InlineKeyboardButton("💬 Open in Pvt", callback_data="settings_pvt")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text("**Choose:**", parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+# === MAIN SETTINGS MENU ===
+async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+    group_name = get_group_name(update.effective_chat)
+    
+    text = f"""
+**⚙️ Settings**
+
+**Group:** `{group_name}`
+
+**Select one of the settings you want to change:**
+    """
+    
+    keyboard = [
+        [InlineKeyboardButton("📜 Regulation", callback_data="set_regulation")],
+        [InlineKeyboardButton("🛡️ Anti Spam", callback_data="set_antispam")],
+        [InlineKeyboardButton("👋 Welcome", callback_data="set_welcome")],
+        [InlineKeyboardButton("🌊 AntiFlood", callback_data="set_antiflood")],
+        [InlineKeyboardButton("🤖 Bot Block", callback_data="set_botblock")],
+        [InlineKeyboardButton("📱 Media", callback_data="set_media")],
+        [InlineKeyboardButton("✅ Approval", callback_data="set_approval")],
+        [InlineKeyboardButton("⌨️ Commands", callback_data="set_commands")],
+        [InlineKeyboardButton("❌ Close", callback_data="close_settings")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+# === REGULATION SETTINGS ===
+async def regulation_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    text = """
+**📜 Regulation**
+
+From this menu you can manage group rules that will be shown with `/rules`
+    """
+    keyboard = [[InlineKeyboardButton("💬 Customize Messages", callback_data="reg_custom")],
+                [InlineKeyboardButton("🔙 Back", callback_data="settings_menu")]]
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def reg_custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    text = """
+**💬 Customize Messages**
+
+**Send now the message you want to set**
+    """
+    keyboard = [
+        [InlineKeyboardButton("🗑️ Remove Message", callback_data="reg_remove")],
+        [InlineKeyboardButton("🔙 Back", callback_data="set_regulation")]
+    ]
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# === ANTI SPAM ===
+async def antispam_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    text = """
+**🛡️ Anti Spam**
+
+In this menu you can decide whether to protect your groups from links, forwarding
+    """
+    keyboard = [
+        [InlineKeyboardButton("✅ Turn ON", callback_data="antispam_on")],
+        [InlineKeyboardButton("❌ Turn OFF", callback_data="antispam_off")],
+        [InlineKeyboardButton("🔙 Back", callback_data="settings_menu")]
+    ]
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# === WELCOME SETTINGS ===
+async def welcome_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    text = """
+**👋 Welcome**
+
+From this menu you can set a welcome msg that will be sent when someone joins
+    """
+    keyboard = [
+        [InlineKeyboardButton("✅ Turn ON", callback_data="welcome_on")],
+        [InlineKeyboardButton("❌ Turn OFF", callback_data="welcome_off")],
+        [InlineKeyboardButton("✍️ Customize Msg", callback_data="welcome_custom")],
+        [InlineKeyboardButton("🗑️ Delete Last Msg", callback_data="welcome_del")],
+        [InlineKeyboardButton("🔙 Back", callback_data="settings_menu")]
+    ]
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# === ANTIFLOOD ===
+async def antiflood_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    text = """
+**🌊 AntiFlood**
+
+Set punishment for users who send many messages in short time
+    """
+    keyboard = [
+        [InlineKeyboardButton("📨 Messages", callback_data="flood_msg")],
+        [InlineKeyboardButton("⏱️ Time", callback_data="flood_time")],
+        [InlineKeyboardButton("🔇 Mute", callback_data="flood_mute")],
+        [InlineKeyboardButton("🚫 Ban", callback_data="flood_ban")],
+        [InlineKeyboardButton("🗑️ Delete Msg", callback_data="flood_del")],
+        [InlineKeyboardButton("✅ Tick", callback_data="flood_tick")],
+        [InlineKeyboardButton("🔙 Back", callback_data="settings_menu")]
+    ]
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# === NUMBER SELECTOR ===
+def number_keyboard(back_data):
+    keyboard = []
+    for i in range(2, 11, 2):
+        keyboard.append([InlineKeyboardButton(str(i), callback_data=f"{back_data}_{i}")])
+    for i in range(12, 21, 2):
+        keyboard.append([InlineKeyboardButton(str(i), callback_data=f"{back_data}_{i}")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=back_data.replace("_select", ""))])
+    return InlineKeyboardMarkup(keyboard)
+
+# === BOT BLOCK ===
+async def botblock_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    text = """
+**🤖 Bot Block**
+
+Users won't be able to add bots. Choose penalty:
+    """
+    keyboard = [
+        [InlineKeyboardButton("✅ Enable", callback_data="botblock_on")],
+        [InlineKeyboardButton("❌ Disable", callback_data="botblock_off")],
+        [InlineKeyboardButton("🔇 Mute", callback_data="botblock_mute")],
+        [InlineKeyboardButton("🚫 Ban", callback_data="botblock_ban")],
+        [InlineKeyboardButton("🔙 Back", callback_data="settings_menu")]
+    ]
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# === MEDIA SETTINGS ===
+async def media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    text = """
+**📱 Media Block**
+
+Block media in group. Use `/filters` to customize
+    """
+    keyboard = [
+        [InlineKeyboardButton("🖼️ Photo ✅/❌", callback_data="media_photo")],
+        [InlineKeyboardButton("🎥 Video ✅/❌", callback_data="media_video")],
+        [InlineKeyboardButton("🎡 GIF ✅/❌", callback_data="media_gif")],
+        [InlineKeyboardButton("✨ Sticker ✅/❌", callback_data="media_sticker")],
+        [InlineKeyboardButton("🎭 Ani Sticker ✅/❌", callback_data="media_anisticker")],
+        [InlineKeyboardButton("🔙 Back", callback_data="settings_menu")]
+    ]
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# === APPROVAL MODE ===
+async def approval_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    text = """
+**✅ Approval Mode**
+
+Delegate group approvals to bot for link joiners
+    """
+    keyboard = [
+        [InlineKeyboardButton("✅ Turn ON", callback_data="approval_on")],
+        [InlineKeyboardButton("❌ Turn OFF", callback_data="approval_off")],
+        [InlineKeyboardButton("🔙 Back", callback_data="settings_menu")]
+    ]
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# === COMMANDS PREFIX ===
+async def commands_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    text = """
+**⌨️ Commands Prefix**
+
+Set bot trigger prefix
+    """
+    keyboard = [
+        [InlineKeyboardButton("/", callback_data="prefix_slash")],
+        [InlineKeyboardButton("!/", callback_data="prefix_exclam")],
+        [InlineKeyboardButton(".;", callback_data="prefix_dot")],
+        [InlineKeyboardButton("🔙 Back", callback_data="settings_menu")]
+    ]
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# === MAIN CALLBACK HANDLER ===
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    chat_id = query.message.chat.id
+    
+    if data == "settings_start":
+        await settings_start(update, context)
+    
+    elif data.startswith("settings_open_"):
+        await settings_menu(update, context)
+    
+    elif data == "settings_pvt":
+        keyboard = [[InlineKeyboardButton("💬 Go To Chat", url=f"https://t.me/{context.bot.username}?start=settings")]]
+        await query.edit_message_text("💬 **DM me Settings ke liye jao**", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    elif data == "set_regulation":
+        await regulation_menu(update, context)
+    
+    elif data == "reg_custom":
+        await reg_custom(update, context)
+    
+    elif data == "set_antispam":
+        await antispam_menu(update, context)
+    
+    elif data == "set_welcome":
+        await welcome_menu(update, context)
+    
+    elif data == "set_antiflood":
+        await antiflood_menu(update, context)
+    
+    elif data.startswith("flood_") or data.startswith("msg_select_") or data.startswith("time_select_"):
+        # Handle number selection
+        await query.answer("✅ Set!")
+    
+    elif data == "set_botblock":
+        await botblock_menu(update, context)
+    
+    elif data == "set_media":
+        await media_menu(update, context)
+    
+    elif data == "set_approval":
+        await approval_menu(update, context)
+    
+    elif data == "set_commands":
+        await commands_menu(update, context)
+    
+    elif data == "settings_menu":
+        await settings_menu(update, context)
+    
+    elif data == "close_settings":
+        await query.edit_message_text("✅ **Settings Closed!**")
+    
+    else:
+        await help_callback(update, context)
+
+# === GROUP ADD HANDLER ===
+async def group_add_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    keyboard = [
+        [InlineKeyboardButton("📋 Open Here", callback_data=f"settings_open_{chat_id}")],
+        [InlineKeyboardButton("💬 Open in Pvt", callback_data="settings_pvt")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("**⚙️ Settings:**", parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+# === SETTINGS COMMAND ===
+async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await settings_group(update, context)
 
 # === MAIN ===
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     
-    # Command Handlers
-    application.add_handler(CommandHandler(["start", "help"], start))
-    application.add_handler(CommandHandler("extra", extra_command))
-    application.add_handler(CommandHandler("mod", mod_command))
-    application.add_handler(CommandHandler("ban", ban))
-    application.add_handler(CommandHandler("warn", warn))
-    application.add_handler(CommandHandler("warns", warns))
+    # Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("settings", settings_cmd))
     
-    # Button Handler
-    application.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, group_add_handler))
     
-    print("🚀 **Database-Free Group Helper Bot Started! ⚡**")
-    print("✅ No SQLite - Pure Memory Storage")
-    application.run_polling()
+    print("🚀 **Group Helper Bot Started! (No DB)**")
+    app.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
