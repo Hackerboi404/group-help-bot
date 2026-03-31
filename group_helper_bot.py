@@ -3,89 +3,56 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ParseMode
-import sqlite3
 from datetime import datetime, timedelta
 import re
 import random
+from collections import defaultdict, deque
 
 # Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Bot Token
-BOT_TOKEN = "8674805097:AAH6Wgg5akr7TC7fLSeZFiMCtfTe5t7Kcgs"
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
-# Database setup
-def init_db():
-    conn = sqlite3.connect('group_helper.db')
-    c = conn.cursor()
-    
-    # Warnings table
-    c.execute('''CREATE TABLE IF NOT EXISTS warnings 
-                 (user_id INTEGER, group_id INTEGER, warns INTEGER, 
-                  PRIMARY KEY (user_id, group_id))''')
-    
-    # Mutes table
-    c.execute('''CREATE TABLE IF NOT EXISTS mutes 
-                 (user_id INTEGER, group_id INTEGER, mute_until TEXT, 
-                  PRIMARY KEY (user_id, group_id))''')
-    
-    # Settings table
-    c.execute('''CREATE TABLE IF NOT EXISTS settings 
-                 (group_id INTEGER PRIMARY KEY, welcome INTEGER, goodbye INTEGER, 
-                  antispam INTEGER, antiflood INTEGER, log_channel TEXT,
-                  max_msg_len INTEGER, media_delete INTEGER)''')
-    
-    # Blacklist words
-    c.execute('''CREATE TABLE IF NOT EXISTS blacklist 
-                 (group_id INTEGER, word TEXT, PRIMARY KEY (group_id, word))''')
-    
-    # Filters
-    c.execute('''CREATE TABLE IF NOT EXISTS filters 
-                 (group_id INTEGER, keyword TEXT, reply TEXT, PRIMARY KEY (group_id, keyword))''')
-    
-    # Moderators
-    c.execute('''CREATE TABLE IF NOT EXISTS moderators 
-                 (group_id INTEGER, user_id INTEGER, PRIMARY KEY (group_id, user_id))''')
-    
-    conn.commit()
-    conn.close()
+# In-memory storage (restart pe reset ho jayega)
+group_settings = defaultdict(lambda: {
+    'welcome': True,
+    'goodbye': True,
+    'antispam': True,
+    'antiflood': True,
+    'blockbot': True,
+    'max_msg_len': 1000,
+    'media_delete': True
+})
+
+user_messages = defaultdict(lambda: defaultdict(deque))  # Antiflood tracking
+user_warns = defaultdict(lambda: defaultdict(int))      # Warnings
+muted_users = defaultdict(lambda: {})                  # Mutes
+moderators = defaultdict(set)                          # Moderator list
 
 # Helper functions
 async def is_admin_or_mod(update: Update, context: ContextTypes.DEFAULT_TYPE, command_level='basic') -> bool:
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
-    # Creator always allowed
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
-        if member.status == 'creator':
+        if member.status in ['creator', 'administrator']:
             return True
     except:
         pass
     
-    if command_level == 'basic':
-        # Check admin or mod
-        try:
-            member = await context.bot.get_chat_member(chat_id, user_id)
-            return member.status in ['administrator', 'creator']
-        except:
-            pass
-        
-        # Check moderator from DB
-        conn = sqlite3.connect('group_helper.db')
-        c = conn.cursor()
-        result = c.execute("SELECT 1 FROM moderators WHERE group_id=? AND user_id=?", 
-                          (chat_id, user_id)).fetchone()
-        conn.close()
-        return bool(result)
+    # Check moderator
+    if command_level == 'basic' and user_id in moderators[chat_id]:
+        return True
     
     return False
 
 def get_user_mention(user):
     return f"[{user.first_name or 'User'}](tg://user?id={user.id})"
 
-# === WELCOME MESSAGE ===
+# === WELCOME SCREEN ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📋 Commands", callback_data='help_main')],
@@ -97,16 +64,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = """
 🤖 **Welcome to Group Helper Bot!**
 
-Ye bot aapke group ko automatically manage karega:
+*No Database - Super Fast! ⚡*
 
+**Features:**
 ✅ Anti-Spam & Anti-Flood
 ✅ Welcome/Goodbye Messages  
-✅ Warns & Auto Ban
-✅ Media Delete
-✅ Log Channel
-✅ Custom Filters
+✅ Warns System (3 = Auto Ban)
+✅ Media Delete Control
+✅ Moderator System
+✅ Beautiful Buttons
 
-**Buttons dabake saare features dekho!**
+**Buttons se explore karo! 👇**
     """
     
     if update.message:
@@ -114,7 +82,7 @@ Ye bot aapke group ko automatically manage karega:
     else:
         await update.callback_query.edit_message_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
-# === MAIN HELP BUTTONS ===
+# === MAIN HELP BUTTONS (11 Buttons) ===
 async def help_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -130,11 +98,11 @@ async def help_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("📝 Log Channel", callback_data='feature_log')],
         [InlineKeyboardButton("📏 Msg Length", callback_data='feature_msglen')],
         [InlineKeyboardButton("⌨️ Commands Type", callback_data='feature_commands')],
-        [InlineKeyboardButton("🔙 Back", callback_data='help_main')]
+        [InlineKeyboardButton("🔙 Back", callback_data='start')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text("📋 **Features & Commands:**", parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    await query.edit_message_text("📋 **All Features & Commands:**", parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 # === FEATURE DETAILS ===
 feature_details = {
@@ -142,288 +110,266 @@ feature_details = {
 **👋 Welcome/Goodbye Messages**
 
 *Commands:*
-`/setwelcome on/off` - Welcome on/off
-`/delwelcome` - Welcome delete
-`/setgoodbye on/off` - Goodbye on/off
-`/goodbye del` - Goodbye delete
+`/welcome on/off` - Welcome toggle
+`/goodbye on/off` - Goodbye toggle
 
-*Auto Features:*
-✅ New member join pe welcome
-✅ Leave pe goodbye message
+*Auto Features:* ✅
+- New join pe welcome
+- Leave pe goodbye
     """,
-    
-    'feature_antispam': """
-**🛡️ Anti Spam/Flood Protection**
 
-*Auto Features:*
-✅ Same message repeat block
-✅ Flood messages delete
-✅ Fast typing stop
+    'feature_antispam': """
+**🛡️ Anti Spam/Flood**
+
+*Auto Features:* ✅
+- Same message repeat
+- Flood messages delete  
+- Fast typing stop
 
 *Commands:*
 `/antispam on/off`
 `/antiflood on/off`
-`/setflood 5` - Max 5 msg/min
     """,
-    
+
     'feature_blockbot': """
 **🚫 Block Bots**
 
-*Auto Features:*
-✅ New bots auto kick
-✅ Bot spam delete
+*Auto Features:* ✅
+- New bots auto kick
+- Bot spam delete
 
 *Commands:*
 `/blockbot on/off`
     """,
-    
+
     'feature_sos': """
 **📢 SOS Admin**
 
 *Commands:*
-`/sos @admin` - Admin ko alert
-`/admins` - Saare admins list
-
-*Auto:*
-✅ SOS spam protection
+`/sos` - Admin ko alert
+`/admins` - Admin list
     """,
-    
+
     'feature_deletemsg': """
 **🗑️ Delete Messages**
 
 *Commands:*
-`/del <number>` - Last N messages delete
-`/purge` - All messages delete
+`/del 10` - Last 10 delete
+`/purge` - All delete (Admin)
 `/delme` - Apna message delete
     """,
-    
+
     'feature_warns': """
 **⚠️ Warns System**
 
 *Commands:*
-`/warn @user` - Warn do (3 warns = ban)
-`/warns @user` - Warns check
-`/resetwarns @user` - Warns clear
+`/warn @user` - Warning (3 = Ban)
+`/warns @user` - Check warns
+`/resetwarns @user` - Clear warns
 
-*Auto:* 3 warns pe auto ban
+*Auto:* 3 warns = 🚫 Ban
     """,
-    
+
     'feature_mediadlt': """
-**📱 Media Delete Settings**
+**📱 Media Delete**
 
 *Commands:*
 `/mediadlt on/off`
-`/setmedia photo/video/sticker`
+`/setmedia photo|video|gif`
 
-*Auto:*
-✅ Forwarded media delete
-✅ Specific media delete
+*Auto:* Forwarded media delete
     """,
-    
+
     'feature_log': """
-**📝 Log Channel**
-
-*Commands:*
-`/setlog @channel`
-`/log off`
-
-*Logs:*
-✅ All bans/mutes
-✅ Joins/leaves
-✅ Deleted messages
+**📝 Log Channel** *(Coming Soon)*
     """,
-    
+
     'feature_msglen': """
-**📏 Message Length Control**
+**📏 Message Length**
 
 *Commands:*
 `/setlen 500` - Max 500 chars
-`/len off`
+`/len off` - Disable
 
-*Auto:* Long messages delete
+*Auto:* Long msg delete
     """,
-    
-    'feature_commands': """
-**⌨️ Commands Type - /extra**
 
-*Buttons:*
-🔸 **Basic** - Ban, Mute, Unban
-🔸 **Medium** - Promote, Demote, Lock  
-🔸 **Advance** - Filters, Mods, Purge
+    'feature_commands': """
+**⌨️ Commands - /extra**
+
+*3 Levels:*
+🔹 **Basic** - ban/mute/warn
+🔸 **Medium** - promote/lock/kick
+🔺 **Advance** - mod/filter/purge
     """
 }
 
-async def feature_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    text = feature_details.get(data, "❌ Feature not available!")
-    
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='help_main')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-# === EXTRA COMMANDS BUTTONS ===
+# === /EXTRA COMMAND ===
 async def extra_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🔹 Basic", callback_data='extra_basic')],
-        [InlineKeyboardButton("🔸 Medium", callback_data='extra_medium')],
-        [InlineKeyboardButton("🔺 Advance", callback_data='extra_advance')],
-        [InlineKeyboardButton("🔙 Main Menu", callback_data='help_main')]
+        [InlineKeyboardButton("🔹 BASIC", callback_data='extra_basic')],
+        [InlineKeyboardButton("🔸 MEDIUM", callback_data='extra_medium')],
+        [InlineKeyboardButton("🔺 ADVANCE", callback_data='extra_advance')],
+        [InlineKeyboardButton("🏠 Home", callback_data='start')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "📋 **Commands Categories:**\n\nChoose your level:",
+        "📋 **Commands by Level:**\n*Choose your commands:*",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=reply_markup
     )
 
 extra_commands = {
     'extra_basic': """
-**🔹 BASIC COMMANDS** (Mods use kar sakte hain)
+**🔹 BASIC COMMANDS** *(Mods + Admins)*
 
-`/ban @user` - User ban
-`/unban @user` - Unban  
-`/mute @user 30` - 30 min mute
-`/unmute @user` - Unmute
-`/warn @user` - Warning do
-`/warns @user` - Warnings check
+- `/ban @user` - Permanent ban
+- `/unban @user` - Unban user  
+- `/mute @user 30` - 30 min mute
+- `/unmute @user` - Unmute
+- `/warn @user` - Warning do
+- `/warns @user` - Warnings dekho
+- `/kick @user` - Kick only
     """,
-    
+
     'extra_medium': """
-**🔸 MEDIUM COMMANDS** (Admins only)
+**🔸 MEDIUM COMMANDS** *(Admins Only)*
 
-`/promote @user` - Admin banao
-`/demote @user` - Admin hatao
-`/lock photo` - Photo lock
-`/unlock photo` - Unlock
-`/kick @user` - Kick karo
-`/admins` - Admin list
+- `/promote @user` - Admin banao
+- `/demote @user` - Admin hatao
+- `/lock photo|video|sticker` - Lock
+- `/unlock photo|video|sticker` - Unlock
+- `/admins` - Admin list
+- `/pin` - Message pin karo
     """,
-    
-    'extra_advance': """
-**🔺 ADVANCE COMMANDS** (Owner only)
 
-`/filter add keyword reply` - Auto reply
-`/filter del keyword` - Filter remove
-`/mod add @user` - Moderator banao
-`/mod del @user` - Mod remove
-`/purge` - All messages delete
-`/setlog @channel` - Log setup
+    'extra_advance': """
+**🔺 ADVANCE COMMANDS** *(Owner Only)*
+
+- `/mod add @user` - Moderator banao
+- `/mod del @user` - Mod hatao
+- `/filter add keyword reply` - Auto reply
+- `/filter del keyword` - Filter remove
+- `/purge` - All messages delete
+- `/setwelcome text` - Custom welcome
     """
 }
 
 # === MODERATOR SYSTEM ===
-async def add_mod(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mod_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin_or_mod(update, context, 'advance'):
-        return await update.message.reply_text("❌ **Owner only command!**")
+        return await update.message.reply_text("❌ **Owner only!**")
     
-    if not context.args:
-        return await update.message.reply_text("❌ **@username do!**")
-    
-    user = context.args[0].replace('@', '')
     chat_id = update.effective_chat.id
     
-    conn = sqlite3.connect('group_helper.db')
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO moderators (group_id, user_id) VALUES (?, ?)", 
-              (chat_id, user))
-    conn.commit()
-    conn.close()
+    if context.args and context.args[0] == 'add':
+        if len(context.args) < 2:
+            return await update.message.reply_text("❌ **/mod add @username**")
+        
+        mod_user = context.args[1].replace('@', '')
+        moderators[chat_id].add(int(mod_user))
+        await update.message.reply_text(f"✅ **{mod_user} Moderator ban gaya!**\nBan/Unban use kar sakta hai.")
     
-    await update.message.reply_text(f"✅ **{user} moderator ban gaya!**\nAb ye ban/unban kar sakta hai.")
+    elif context.args and context.args[0] == 'del':
+        if len(context.args) < 2:
+            return await update.message.reply_text("❌ **/mod del @username**")
+        
+        mod_user = context.args[1].replace('@', '')
+        moderators[chat_id].discard(int(mod_user))
+        await update.message.reply_text(f"✅ **{mod_user} se moderator hataya!**")
 
 # === BASIC COMMANDS ===
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin_or_mod(update, context, 'basic'):
-        return
-    
-    if not update.message.reply_to_message and not context.args:
-        return await update.message.reply_text("❌ **Reply karo ya @user do!**")
-    
-    user = update.message.reply_to_message.from_user if update.message.reply_to_message else None
-    
-    try:
-        if user:
-            await context.bot.ban_chat_member(update.effective_chat.id, user.id)
-            await update.message.reply_text(f"🚫 **{get_user_mention(user)} banned!**")
-        else:
-            await update.message.reply_text("❌ **User nahi mila!**")
-    except Exception as e:
-        await update.message.reply_text(f"❌ **Error:** {str(e)}")
-
-# Similar commands for other functions...
-async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin_or_mod(update, context, 'basic'):
-        return
+        return await update.message.reply_text("❌ **Mod/Admin only!**")
     
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ **Reply karo!**")
+        return await update.message.reply_text("❌ **User ko reply karo!**")
     
     user = update.message.reply_to_message.from_user
     chat_id = update.effective_chat.id
     
-    conn = sqlite3.connect('group_helper.db')
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO warnings VALUES (?, ?, 0)", (user.id, chat_id))
-    c.execute("UPDATE warnings SET warns = warns + 1 WHERE user_id=? AND group_id=?", 
-              (user.id, chat_id))
-    warns = c.execute("SELECT warns FROM warnings WHERE user_id=? AND group_id=?", 
-                     (user.id, chat_id)).fetchone()[0]
-    conn.commit()
-    conn.close()
+    try:
+        await context.bot.ban_chat_member(chat_id, user.id)
+        await update.message.reply_text(f"🚫 **{get_user_mention(user)} banned!**", parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        await update.message.reply_text(f"❌ **Ban failed:** {str(e)}")
+
+async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin_or_mod(update, context, 'basic'):
+        return await update.message.reply_text("❌ **Mod/Admin only!**")
     
-    if warns >= 3:
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("❌ **User ko reply karo!**")
+    
+    user = update.message.reply_to_message.from_user
+    chat_id = update.effective_chat.id
+    
+    user_warns[chat_id][user.id] += 1
+    warns_count = user_warns[chat_id][user.id]
+    
+    msg = f"⚠️ **Warn #{warns_count}/3** {get_user_mention(user)}"
+    
+    if warns_count >= 3:
         try:
             await context.bot.ban_chat_member(chat_id, user.id)
-            await update.message.reply_text(f"🚫 **{get_user_mention(user)} 3 warns pe banned!**")
-            conn = sqlite3.connect('group_helper.db')
-            c = conn.cursor()
-            c.execute("DELETE FROM warnings WHERE user_id=? AND group_id=?", (user.id, chat_id))
-            conn.commit()
-            conn.close()
+            msg += "\n🚫 **3 warns complete - BANNED!**"
+            del user_warns[chat_id][user.id]  # Reset warns
         except:
             pass
-    else:
-        await update.message.reply_text(f"⚠️ **Warn #{warns}/3** {get_user_mention(user)}")
+    
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+async def warns(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("❌ **User ko reply karo!**")
+    
+    user = update.message.reply_to_message.from_user
+    chat_id = update.effective_chat.id
+    count = user_warns[chat_id].get(user.id, 0)
+    
+    await update.message.reply_text(f"📊 **Warnings:** {count}/3")
 
 # === CALLBACK HANDLER ===
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data == 'help_main':
+    data = query.data
+    
+    if data == 'help_main':
         await help_main_callback(update, context)
-    elif query.data.startswith('feature_'):
-        await feature_callback(update, context)
-    elif query.data.startswith('extra_'):
-        text = extra_commands.get(query.data, "❌ Command not found!")
+    elif data == 'start':
+        await start(update, context)
+    elif data.startswith('feature_'):
+        text = feature_details.get(data, "❌ Feature nahi mila!")
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='help_main')]]
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, 
                                     reply_markup=InlineKeyboardMarkup(keyboard))
-    elif query.data == 'settings':
-        await query.edit_message_text("⚙️ **Settings coming soon...**")
+    elif data.startswith('extra_'):
+        text = extra_commands.get(data, "❌ Command nahi mila!")
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='help_main')]]
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, 
+                                    reply_markup=InlineKeyboardMarkup(keyboard))
 
 # === MAIN ===
 def main():
-    init_db()
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", start))
+    # Command Handlers
+    application.add_handler(CommandHandler(["start", "help"], start))
     application.add_handler(CommandHandler("extra", extra_command))
-    application.add_handler(CommandHandler("mod", add_mod))
+    application.add_handler(CommandHandler("mod", mod_command))
     application.add_handler(CommandHandler("ban", ban))
     application.add_handler(CommandHandler("warn", warn))
+    application.add_handler(CommandHandler("warns", warns))
     
-    # Callback handler
+    # Button Handler
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    print("🚀 **Group Helper Bot Started!**")
+    print("🚀 **Database-Free Group Helper Bot Started! ⚡**")
+    print("✅ No SQLite - Pure Memory Storage")
     application.run_polling()
 
 if __name__ == '__main__':
