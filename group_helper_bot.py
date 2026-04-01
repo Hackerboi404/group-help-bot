@@ -7,8 +7,8 @@ from collections import defaultdict
 import re
 
 # Config
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Yahan apna token daalo
-BOT_USERNAME = "YOUR_BOT_USERNAME"  # Yahan bot username daalo (botfather se)
+BOT_TOKEN = "8674805097:AAH6Wgg5akr7TC7fLSeZFiMCtfTe5t7Kcgs"  # Yahan apna token daalo
+BOT_USERNAME = "Newtest76_bot"  # Yahan bot username daalo (botfather se)
 
 logging.basicConfig(level=logging.INFO)
 
